@@ -9,6 +9,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using System.IO;
 
 namespace Models.Core
 {
@@ -294,6 +295,14 @@ namespace Models.Core
             if (cancelToken == null)
                 cancelToken = new CancellationTokenSource();
 
+            // Data assimilation: rename threads.
+            string OldThreadName = Thread.CurrentThread.Name;
+            Console.WriteLine("File: " + Path.GetFileNameWithoutExtension(this.FileName) + ", Simulation " + this.Name + " has commenced.");
+            Thread.CurrentThread.Name = this.Name;
+            if (Thread.CurrentThread.Name == "Truth")
+            {
+                Thread.CurrentThread.Priority = ThreadPriority.Highest;
+            }
             try
             {
                 // Invoke our commencing event to let all models know we're about to start.
