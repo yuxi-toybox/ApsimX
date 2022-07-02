@@ -574,6 +574,31 @@
             }
         }
 
+        //Data assimilation
+        /// <summary>
+        /// Event handler invoked when user clicks on 'DA toolbox'.
+        /// </summary>
+        /// <param name="sender">Sender object.</param>
+        /// <param name="e">Event arguments.</param>
+        public void OnDAToolboxClick(object sender, EventArgs e)
+        {
+            try
+            {
+                Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream("ApsimNG.Resources.Toolboxes.DAToolbox.apsimx");
+                StreamReader streamReader = new StreamReader(s);
+                bool onLeftTabControl = true;
+                if (sender != null)
+                {
+                    onLeftTabControl = this.view.IsControlOnLeft(sender);
+                }
+
+                this.OpenApsimXFromMemoryInTab("DA toolbox", streamReader.ReadToEnd(), onLeftTabControl);
+            }
+            catch (Exception err)
+            {
+                ShowError(err);
+            }
+        }
         /// <summary>
         /// Gets the inner-most exception of an exception.
         /// </summary>
@@ -612,6 +637,12 @@
                                 "Management toolbox",
                                           new Gtk.Image(null, "ApsimNG.Resources.Toolboxes.Toolbox.svg"),
                                           this.OnManagementToolboxClick);
+
+            // Data assimilation
+            startPage.AddButton(
+                    "DA toolbox",
+                              new Gtk.Image(null, "ApsimNG.Resources.Toolboxes.Toolbox.svg"),
+                              this.OnDAToolboxClick);
 
             startPage.AddButton(
                                 "Training toolbox",
