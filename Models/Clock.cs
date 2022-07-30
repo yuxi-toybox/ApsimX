@@ -9,6 +9,10 @@ namespace Models
     using System.Collections.Generic;
     using System.Data;
     using APSIM.Shared.Utilities;
+    // Yuxi: Data assimilation.
+    using System.Threading;
+    using Models.DataAssimilation;
+    using System.IO;
 
     /// <summary>
     /// The clock model is resonsible for controlling the daily timestep in APSIM. It 
@@ -37,7 +41,7 @@ namespace Models
         [Summary]
         [Description("The end date of the simulation")]
         public DateTime? End { get; set; }
-
+ 
         /// <summary>
         /// Gets the start date for the simulation.
         /// </summary>
@@ -243,6 +247,56 @@ namespace Models
         [JsonIgnore]
         public DateTime Today { get; private set; }
 
+        #region Data assimilation
+
+        [Link(IsOptional = true)]
+        IDataAssimilation DA = null;
+
+        [Link(IsOptional = true)]
+        Control Control = null;
+
+        [Link(IsOptional = true)]
+        InitialConditions Initial = null;
+        /// <summary>Days after simulation starts.</summary>
+        [Summary]
+        [Description("Days after simulation starts")]
+        public int DayafterStart { get { return (Today - StartDate).Days; } }
+        /// <summary>The Table ID. </summary>
+        [JsonIgnore]
+        public int ID
+        {
+            get
+            {
+                double Span = Today.Subtract(StartDate).Days;
+                return Convert.ToInt16(Span);
+            }
+        }
+
+        private int name;
+        private static int threadNumber = 0;
+        private static List<AutoResetEvent> resetEvents1 = new List<AutoResetEvent>();
+        private static List<AutoResetEvent> resetEvents2 = new List<AutoResetEvent>();
+        private static ManualResetEvent resetEvent3 = new ManualResetEvent(false);
+        private static ManualResetEvent resetEvent4 = new ManualResetEvent(false);
+
+        /// <summary>Occur when [PrepareAssimilation].</summary>
+        public event EventHandler PrepareAssimilation;
+        /// <summary>Occur when [NewDay].</summary>
+        public event EventHandler NewDay;
+        /// <summary>Occur when [Set Initial Condition].</summary>
+        public event EventHandler SetInitialCondition;
+        /// <summary>Occur when [Perturb Initial Condition].</summary>
+        public event EventHandler PerturbInitialCondition;
+        /// <summary>Occur when [Write prior result].</summary>
+        public event EventHandler WritePriorResult;
+        /// <summary>Occur when [Do Data Assimilation].</summary>
+        public event EventHandler DoDataAssimilation;
+        /// <summary>Occur when [Write prior result].</summary>
+        public event EventHandler WritePosteriorResult;
+        /// <summary>Occur when [WriteSQLite].</summary>
+        public event EventHandler WriteSQLite;
+        #endregion
+
         /// <summary>
         /// Returns the current fraction of the overall simulation which has been completed
         /// </summary>
@@ -300,8 +354,84 @@ namespace Models
             if (FinalInitialise != null)
                 FinalInitialise.Invoke(this, args);
 
+            #region Data assimilation: Thread control part 1.
+
+            if (DA != null)
+            {
+
+                if (Thread.CurrentThread.Name == "Truth")
+                {
+                    name = Control.EnsembleSize;
+                }
+                else if (Thread.CurrentThread.Name == "OpenLoop")
+                {
+                    name = Control.EnsembleSize + 1;
+                }
+                else
+                {
+                    name = Convert.ToInt16(Thread.CurrentThread.Name.Substring(8));
+                }
+                if (name == Control.EnsembleSize)
+                {
+                    for (int i = 0; i < Control.EnsembleSize + 2; i++)
+                    {
+                        AutoResetEvent resetEvent = new AutoResetEvent(false);
+                        resetEvents1.Add(resetEvent);
+                    }
+
+                    for (int i = 0; i < Control.EnsembleSize + 2; i++)
+                    {
+                        AutoResetEvent resetEvent = new AutoResetEvent(false);
+                        resetEvents2.Add(resetEvent);
+                    }
+                }
+
+                threadNumber++;
+
+                Thread.Sleep(5000);
+
+                //Note: Let the Clock module decide with thread do data assimilation.
+                //Initialize only once.
+                if (PrepareAssimilation != null && name == Control.EnsembleSize)    //Truth
+                {
+                    PrepareAssimilation.Invoke(this, args);
+                }
+
+                if (name == Control.EnsembleSize)   //Truth
+                {
+                    Console.WriteLine("Simulation started");
+                }
+            }
+            #endregion
+
             while (Today <= EndDate && (e.CancelToken == null || !e.CancelToken.IsCancellationRequested))
             {
+                #region Data assimilation: Thread control part 2.
+
+                if (DA != null)
+                {
+                    if (name != Control.EnsembleSize)       //Not The Truth
+                        resetEvents1[name].WaitOne();
+
+                    if (NewDay != null && name == Control.EnsembleSize)     //Truth
+                    {
+                        NewDay.Invoke(this, args);
+                        Console.WriteLine("Date: {0}, DoY: {1}, DayafterStart: {2}", Today.Date.ToString("yyyy-M-d"), Today.DayOfYear, DayafterStart);
+                    }
+
+                    if (Today == Initial.InitialDate && SetInitialCondition != null)
+                    {
+                        SetInitialCondition.Invoke(this, args);
+                    }
+
+                    if (Today == Initial.InitialDate && name != Control.EnsembleSize && PerturbInitialCondition != null)
+                    {
+                        PerturbInitialCondition.Invoke(this, args);
+                    }
+                }
+
+                #endregion
+
                 if (DoWeather != null)
                     DoWeather.Invoke(this, args);
 
@@ -385,6 +515,48 @@ namespace Models
                 if (DoReportCalculations != null)
                     DoReportCalculations.Invoke(this, args);
 
+
+                #region Data assimilation: Thread control part 3.
+
+                if (DA != null)
+                {
+
+                    //Write all results.
+                    if (WritePriorResult != null)
+                        WritePriorResult.Invoke(this, args);
+
+                    if (name != Control.EnsembleSize - 1)     //Not The last ensemble
+                    {
+                        //If not the last thread, let the next thread run a new day.
+                        resetEvents1[GetNext(name, Control.EnsembleSize + 2)].Set();
+                        resetEvent3.WaitOne();
+                    }
+                    else
+                    {   //The last ensemble
+                        //If the last thread, let all threads continue.
+                        //Hold all thread until the last thread finish.
+
+                        if (Control.DAOption != "" && DoDataAssimilation != null) //Control.DAOption != "" &&
+                            DoDataAssimilation.Invoke(this, args);
+
+                        Thread.Sleep(10);
+                        resetEvent3.Set();
+                        Thread.Sleep(10);
+                        resetEvent3.Reset();
+                    }
+
+                    if (name != Control.EnsembleSize)   //Truth
+                        resetEvents2[name].WaitOne();
+
+                    //Calculate error covariances.
+                    if (WritePosteriorResult != null)
+                        WritePosteriorResult.Invoke(this, args);
+
+                    //Release all threads for the next day.
+                }
+                #endregion
+
+
                 if (Today.DayOfWeek == DayOfWeek.Saturday && EndOfWeek != null)
                     EndOfWeek.Invoke(this, args);
 
@@ -453,7 +625,33 @@ namespace Models
                 if (DoReport != null)
                     DoReport.Invoke(this, args);
 
+                // Data assimilation: Write all results SQLite.
+                if (Today == EndDate && Control != null && name == Control.EnsembleSize - 1)
+                    if (DA != null && Control.WriteSQL == true && WriteSQLite != null)
+                    {
+                        WriteSQLite.Invoke(this, args);
+
+                    }
+
                 Today = Today.AddDays(1);
+
+                #region Data assimilation: Thread control part 4.
+                if (DA != null)
+                {
+                    if (name != Control.EnsembleSize - 1)   //Not The last ensemble
+                    {
+                        resetEvents2[GetNext(name, Control.EnsembleSize + 2)].Set();
+                        resetEvent4.WaitOne();
+                    }
+                    else
+                    {           //The last ensemble
+                        Thread.Sleep(10);
+                        resetEvent4.Set();
+                        Thread.Sleep(10);
+                        resetEvent4.Reset();
+                    }
+                }
+                #endregion
             }
             Today = EndDate;
 
@@ -461,6 +659,14 @@ namespace Models
                 EndOfSimulation.Invoke(this, args);
 
             Summary?.WriteMessage(this, "Simulation terminated normally", MessageType.Information);
+        }
+
+        /// <summary>Get the next ensemble.</summary>
+        /// <param name="n"></param>
+        /// <param name="length"></param>
+        public int GetNext(int n, int length)
+        {
+            return (n + 1) % length;
         }
     }
 }

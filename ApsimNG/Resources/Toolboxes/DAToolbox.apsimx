@@ -2,7 +2,17 @@
 <Simulations xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" Version="7">
   <Name>DA toolbox</Name>
   <Folder>
+    <Test>Test</Test>
     <Name>DA algorithms</Name>
+    <Simulation>
+      <Name>Simulation</Name>
+      <Test>Test</Test>
+    </Simulation>
+    <Clock>Clock</Clock>
+    <Plant>Wheat</Plant>
+    <Control>
+      <Name>Control</Name>
+    </Control>    
   </Folder>
   <Folder>
     <Name>Examples</Name>
